@@ -48,6 +48,18 @@ module i2c_tb;
     wire master_scl;
     wire master_sda;
 
+    reg slave_bfm_enable;
+    reg slave_ack_drive;
+    reg [7:0] slave_read_byte;
+    reg [1:0] bfm_phase;
+    reg [3:0] bfm_bit_count;
+    reg [3:0] bfm_read_count;
+    reg [7:0] bfm_shift;
+    reg bfm_ack_pending;
+    reg bfm_ack_sample_pending;
+
+    tri1 bfm_sda;
+
     // Bus multiplexing: only one active engine at a time controls each line.
     assign scl = ((tx_enable && (tx_scl == 1'b0)) ||
                   (rx_slave_enable && (rx_scl == 1'b0)) ||
@@ -111,100 +123,72 @@ module i2c_tb;
     );
 
     // -----------------------------------------------------------------
-    // Emulated slave for the Master write/read tests.
-    // slave_bfm_enable selects this optional BFM driver.
+    // Emulated I2C slave. 0=address, 1=read data, 2=write data.
     // -----------------------------------------------------------------
-    reg slave_bfm_enable;
-    reg slave_ack_drive;
-    reg slave_read_drive;
-    reg [7:0] slave_read_byte;
-    reg bfm_phase;          // 0=address, 1=write data
-    reg [3:0] bfm_bit_count;
-    reg [7:0] bfm_shift;
-    reg bfm_wait_ack;
-    reg scl_d1;
-    reg scl_d2;
-
-    tri1 bfm_sda;
-
     assign bfm_sda = slave_ack_drive ? 1'b0 :
-                     slave_read_drive ? ((slave_read_byte[7-bfm_bit_count] == 1'b0) ? 1'b0 : 1'bz) :
+                     ((bfm_phase == 2'd1) && (bfm_read_count < 4'd8)) ?
+                         (slave_read_byte[7-bfm_read_count] ? 1'bz : 1'b0) :
                      1'bz;
 
-    always @(posedge clk) begin
-        scl_d2 <= scl_d1;
-        scl_d1 <= scl;
-
+    always @(posedge scl or negedge rst_n) begin
         if (!rst_n) begin
             slave_ack_drive <= 1'b0;
-            slave_read_drive <= 1'b0;
-            bfm_phase <= 1'b0;
+            bfm_phase <= 2'd0;
             bfm_bit_count <= 4'd0;
+            bfm_read_count <= 4'd0;
             bfm_shift <= 8'd0;
-            bfm_wait_ack <= 1'b0;
-            scl_d1 <= 1'b1;
-            scl_d2 <= 1'b1;
+            bfm_ack_pending <= 1'b0;
+            bfm_ack_sample_pending <= 1'b0;
         end else if (slave_bfm_enable) begin
-            // Falling SCL: prepare ACK or the next read-data bit.
-            if ((scl_d1 == 1'b0) && (scl_d2 == 1'b1)) begin
-                if (bfm_wait_ack) begin
-                    slave_ack_drive <= 1'b0;
-                    bfm_wait_ack <= 1'b0;
-                    if (bfm_phase == 1'b0) begin
-                        if (bfm_shift[0] == 1'b1) begin
-                            slave_read_drive <= 1'b1;
-                            bfm_phase <= 1'b1;
-                            bfm_bit_count <= 4'd0;
-                        end else begin
-                            slave_read_drive <= 1'b0;
-                            bfm_phase <= 1'b1;
-                            bfm_bit_count <= 4'd0;
-                        end
-                    end else begin
-                        bfm_phase <= 1'b1;
-                        bfm_bit_count <= 4'd0;
-                        slave_read_drive <= 1'b0;
-                    end
-                end
-            end
-
-            // Rising SCL: sample address/write data or prepare read value.
-            if ((scl_d1 == 1'b1) && (scl_d2 == 1'b0)) begin
-                if (bfm_phase == 1'b0) begin
+            if (bfm_phase == 2'd0) begin
+                if (bfm_bit_count < 4'd8) begin
                     bfm_shift <= {bfm_shift[6:0], sda};
                     if (bfm_bit_count == 4'd7) begin
                         bfm_bit_count <= 4'd8;
-                    end else begin
+                        bfm_ack_pending <= 1'b1;
+                    end else
                         bfm_bit_count <= bfm_bit_count + 4'd1;
-                    end
-
-                    if (bfm_bit_count == 4'd7)
-                        slave_ack_drive <= 1'b1;
-                end else if (slave_read_drive) begin
+                end
+            end else if (bfm_phase == 2'd2) begin
+                if (bfm_bit_count < 4'd8) begin
                     if (bfm_bit_count == 4'd7) begin
-                        slave_read_drive <= 1'b0;
-                        bfm_bit_count <= 4'd0;
-                    end else begin
+                        bfm_bit_count <= 4'd8;
+                        bfm_ack_pending <= 1'b1;
+                    end else
                         bfm_bit_count <= bfm_bit_count + 4'd1;
+                end
+            end
+        end
+    end
+
+    always @(negedge scl or negedge rst_n) begin
+        if (!rst_n) begin
+            slave_ack_drive <= 1'b0;
+            bfm_ack_pending <= 1'b0;
+            bfm_ack_sample_pending <= 1'b0;
+        end else if (slave_bfm_enable) begin
+            if (bfm_ack_pending) begin
+                slave_ack_drive <= 1'b1;
+                bfm_ack_pending <= 1'b0;
+                bfm_ack_sample_pending <= 1'b1;
+            end else if (bfm_ack_sample_pending) begin
+                slave_ack_drive <= 1'b0;
+                bfm_ack_sample_pending <= 1'b0;
+                if (bfm_phase == 2'd0) begin
+                    bfm_bit_count <= 4'd0;
+                    if (bfm_shift[0] == 1'b1) begin
+                        bfm_phase <= 2'd1;
+                        bfm_read_count <= 4'd0;
+                    end else begin
+                        bfm_phase <= 2'd2;
                     end
                 end else begin
-                    bfm_shift <= {bfm_shift[6:0], sda};
-                    if (bfm_bit_count == 4'd7) begin
-                        bfm_bit_count <= 4'd8;
-                        slave_ack_drive <= 1'b1;
-                    end else begin
-                        bfm_bit_count <= bfm_bit_count + 4'd1;
-                    end
+                    bfm_bit_count <= 4'd0;
+                    bfm_phase <= 2'd2;
                 end
-            end
-
-            // ACK driver is held low while SCL is low for the ninth clock.
-            if ((scl_d1 == 1'b0) && (scl_d2 == 1'b1)) begin
-                if ((bfm_bit_count == 4'd8) && !slave_ack_drive)
-                    slave_ack_drive <= 1'b1;
-
-                if ((bfm_bit_count == 4'd8) && slave_ack_drive)
-                    bfm_wait_ack <= 1'b1;
+            end else if (bfm_phase == 2'd1) begin
+                if (bfm_read_count < 4'd8)
+                    bfm_read_count <= bfm_read_count + 4'd1;
             end
         end
     end
@@ -259,20 +243,25 @@ module i2c_tb;
         tx_data = 8'hA5;
         repeat (2) @(posedge clk);
         tx_start = 1'b1;
-        rx_start = 1'b1;
         @(posedge clk);
         tx_start = 1'b0;
-        rx_start = 1'b0;
 
         wait (tx_done === 1'b1);
         $display("[%0t] Tx done: NACK=%b Tx-state=%0d", $time, tx_nack, dut_tx.state);
-        repeat (500) @(posedge clk);
-        if (rx_valid) begin
-            $display("[%0t] Rx received 0x%02X; Rx-state=%0d", $time, rx_data, dut_rx_slave.state);
-            rx_received = rx_data;
-        end else begin
-            $display("[%0t] Rx timeout: no valid byte; Rx-state=%0d", $time, dut_rx_slave.state);
-        end
+        fork
+            begin
+                repeat (5000) begin
+                    @(posedge clk);
+                    if (rx_valid)
+                        rx_received = rx_data;
+                end
+            end
+        join
+        if (!rx_valid)
+            $fatal(1, "Standalone Rx did not receive byte 0xA5");
+        if (rx_received !== 8'hA5)
+            $fatal(1, "Standalone Rx mismatch: received 0x%02X, expected 0xA5", rx_received);
+        $display("[%0t] Rx received 0x%02X; Rx-state=%0d", $time, rx_received, dut_rx_slave.state);
 
         repeat (20) @(posedge clk);
         tx_enable = 1'b0;
@@ -284,11 +273,9 @@ module i2c_tb;
         $display("[%0t] TEST 2: Master write address 0x50 + data 0x5A", $time);
         slave_bfm_enable = 1'b1;
         slave_ack_drive = 1'b0;
-        slave_read_drive = 1'b0;
-        bfm_phase = 1'b0;
+        bfm_phase = 2'd0;
         bfm_bit_count = 4'd0;
         bfm_shift = 8'd0;
-        bfm_wait_ack = 1'b0;
         master_enable = 1'b1;
         master_address = 7'h50;
         master_rw = 1'b0;
@@ -299,6 +286,8 @@ module i2c_tb;
         master_start = 1'b0;
 
         wait (master_done === 1'b1);
+        if (master_nack)
+            $fatal(1, "Master write unexpectedly received NACK");
         $display("[%0t] Master write done: NACK=%b Master-state=%0d Tx-state=%0d", $time,
                  master_nack, dut_master.state, dut_tx.state);
 
@@ -312,12 +301,11 @@ module i2c_tb;
         $display("[%0t] TEST 3: Master read address 0x50, slave returns 0xC3", $time);
         slave_bfm_enable = 1'b1;
         slave_ack_drive = 1'b0;
-        slave_read_drive = 1'b1;
         slave_read_byte = 8'hC3;
-        bfm_phase = 1'b0;
+        bfm_phase = 2'd0;
         bfm_bit_count = 4'd0;
+        bfm_read_count = 4'd0;
         bfm_shift = 8'd0;
-        bfm_wait_ack = 1'b0;
         master_enable = 1'b1;
         master_address = 7'h50;
         master_rw = 1'b1;
@@ -328,6 +316,13 @@ module i2c_tb;
         master_start = 1'b0;
 
         wait (master_done === 1'b1);
+        @(posedge clk);
+        if (!master_data_valid)
+            $fatal(1, "Master read: data_valid was not asserted");
+        if (master_rx_data !== 8'hC3)
+            $fatal(1, "Master read mismatch: received 0x%02X, expected 0xC3", master_rx_data);
+        if (master_nack)
+            $fatal(1, "Master read unexpectedly reported an error NACK");
         $display("[%0t] Master read done: data_valid=%b data=0x%02X NACK=%b", $time,
                  master_data_valid, master_rx_data, master_nack);
 

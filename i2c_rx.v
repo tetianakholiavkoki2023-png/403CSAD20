@@ -46,16 +46,20 @@ module i2c_rx (
     reg        sda_d1;
     reg        sda_d2;
     reg        address_match;
+    reg        addr_ack_seen;
+    reg        data_ack_seen;
 
     wire tick;
     wire scl_rising;
     wire scl_falling;
+    wire [7:0] address_byte;
     wire start_detect;
     wire stop_detect;
 
     assign tick = (div_count == ((CLK_DIV / 2) - 1));
-    assign scl_rising  = (scl_d1 == 1'b1) && (scl_d2 == 1'b0);
-    assign scl_falling = (scl_d1 == 1'b0) && (scl_d2 == 1'b1);
+    assign scl_rising  = (scl_i == 1'b1) && (scl_d1 == 1'b0);
+    assign scl_falling = (scl_i == 1'b0) && (scl_d1 == 1'b1);
+    assign address_byte = {shift_reg[6:0], sda_i};
     assign start_detect = (scl_d1 == 1'b1) && (sda_d1 == 1'b0) && (sda_d2 == 1'b1);
     assign stop_detect  = (scl_d1 == 1'b1) && (sda_d1 == 1'b1) && (sda_d2 == 1'b0);
 
@@ -78,9 +82,10 @@ module i2c_rx (
             sda_d1      <= 1'b1;
             sda_d2      <= 1'b1;
             address_match <= 1'b0;
+            addr_ack_seen <= 1'b0;
+            data_ack_seen <= 1'b0;
         end else begin
             done_o <= 1'b0;
-            data_valid_o <= 1'b0;
 
             // Synchronizers for start/stop and SCL edge detection.
             scl_d2 <= scl_d1;
@@ -99,9 +104,10 @@ module i2c_rx (
                         scl_o <= 1'b1;
                         sda_o <= 1'b1;
                         busy_o <= 1'b0;
-                        // Detect START directly as an SDA-low event while SCL is high.
-                        // The synchronized start_detect wire is retained for noise filtering.
-                        if (start_i || start_detect || ((scl_i == 1'b1) && (sda_i == 1'b0))) begin
+                        nack_o <= 1'b0;
+                        // START is detected only by SDA falling while SCL is high.
+                        if (start_detect) begin
+                            data_valid_o <= 1'b0;
                             busy_o <= 1'b1;
                             shift_reg <= 8'd0;
                             bit_count <= 3'd7;
@@ -115,27 +121,36 @@ module i2c_rx (
                             state <= SL_IDLE;
                         end else if (scl_rising) begin
                             shift_reg <= {shift_reg[6:0], sda_i};
-                            if (bit_count == 3'd0)
+                            if (bit_count == 3'd0) begin
+                                if ((address_byte[7:1] == own_address_i) &&
+                                    (address_byte[0] == 1'b0))
+                                    sda_o <= 1'b0;
+                                else
+                                    sda_o <= 1'b1;
+                                addr_ack_seen <= 1'b0;
                                 state <= SL_ADDR_ACK;
+                            end
                             else
                                 bit_count <= bit_count - 3'd1;
                         end
                     end
 
                     SL_ADDR_ACK: begin
-                        if (scl_falling) begin
-                            address_match <= (shift_reg[7:1] == own_address_i);
-                            if ((shift_reg[7:1] == own_address_i) && (shift_reg[0] == 1'b0))
-                                sda_o <= 1'b0; // ACK
-                            else
-                                sda_o <= 1'b1; // R/W=1 or address mismatch: NACK
-                        end
-                        if (scl_rising) begin
+                        address_match <= (shift_reg[7:1] == own_address_i);
+                        if ((shift_reg[7:1] == own_address_i) && (shift_reg[0] == 1'b0))
+                            sda_o <= 1'b0;
+                        else
+                            sda_o <= 1'b1;
+                        if (scl_rising)
+                            addr_ack_seen <= 1'b1;
+                        if (scl_falling && addr_ack_seen) begin
                             if ((shift_reg[7:1] != own_address_i) || (shift_reg[0] == 1'b1))
                                 state <= SL_IDLE;
                             else begin
                                 shift_reg <= 8'd0;
                                 bit_count <= 3'd7;
+                                addr_ack_seen <= 1'b0;
+                                sda_o <= 1'b1;
                                 state <= SL_DATA;
                             end
                         end
@@ -148,26 +163,32 @@ module i2c_rx (
                             state <= SL_IDLE;
                         end else if (scl_rising) begin
                             shift_reg <= {shift_reg[6:0], sda_i};
-                            if (bit_count == 3'd0)
+                            if (bit_count == 3'd0) begin
+                                data_o <= {shift_reg[6:0], sda_i};
+                                data_valid_o <= 1'b1;
+                                data_ack_seen <= 1'b0;
                                 state <= SL_DATA_ACK;
+                            end
                             else
                                 bit_count <= bit_count - 3'd1;
                         end
                     end
 
                     SL_DATA_ACK: begin
-                        if (scl_falling) begin
-                            if (ack_enable_i)
-                                sda_o <= 1'b0;
-                            else
-                                sda_o <= 1'b1;
-                        end
-                        if (scl_rising) begin
+                        if (ack_enable_i)
+                            sda_o <= 1'b0;
+                        else
+                            sda_o <= 1'b1;
+                        if (scl_rising)
+                            data_ack_seen <= 1'b1;
+                        if (scl_falling && data_ack_seen) begin
                             if (ack_enable_i) begin
                                 data_o <= shift_reg;
                                 data_valid_o <= 1'b1;
                                 shift_reg <= 8'd0;
                                 bit_count <= 3'd7;
+                                data_ack_seen <= 1'b0;
+                                sda_o <= 1'b1;
                                 state <= SL_DATA;
                             end else begin
                                 nack_o <= 1'b1;
@@ -194,6 +215,8 @@ module i2c_rx (
                         scl_o <= 1'b1;
                         sda_o <= 1'b1;
                         busy_o <= 1'b0;
+                        data_valid_o <= 1'b0;
+                        nack_o <= 1'b0;
                         div_count <= 32'd0;
                         if (start_i) begin
                             busy_o <= 1'b1;
@@ -220,6 +243,10 @@ module i2c_rx (
                                 end
                                 4'd2: begin
                                     shift_reg <= {shift_reg[6:0], sda_i};
+                                    if (bit_count == 3'd0) begin
+                                        data_o <= {shift_reg[6:0], sda_i};
+                                        data_valid_o <= 1'b1;
+                                    end
                                     phase <= 4'd3;
                                 end
                                 4'd3: begin
@@ -256,8 +283,6 @@ module i2c_rx (
                                 4'd3: begin
                                     scl_o <= 1'b0;
                                     sda_o <= 1'b0;
-                                    data_o <= shift_reg;
-                                    data_valid_o <= 1'b1;
                                     phase <= 4'd0;
                                     state <= RX_STOP;
                                 end
@@ -286,7 +311,7 @@ module i2c_rx (
                                 4'd3: begin
                                     busy_o <= 1'b0;
                                     done_o <= 1'b1;
-                                    nack_o <= 1'b1;
+                                    nack_o <= 1'b0;
                                     phase <= 4'd0;
                                     state <= RX_DONE;
                                 end

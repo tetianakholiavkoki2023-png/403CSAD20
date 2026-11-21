@@ -143,11 +143,10 @@ module i2c_master (
                 end
 
                 M_RX_WAIT: begin
-                    if (rx_valid) begin
+                    if (rx_done) begin
                         data_o <= rx_data;
                         data_valid_o <= 1'b1;
-                    end
-                    if (rx_done) begin
+                        nack_o <= rx_nack;
                         busy_o <= 1'b0;
                         done_o <= 1'b1;
                         state <= M_DONE;

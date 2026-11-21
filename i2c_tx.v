@@ -160,7 +160,7 @@ module i2c_tx (
                             4'd3: begin
                                 scl_o <= 1'b0;
                                 phase <= 4'd0;
-                                if (ack_level == 1'b0) begin
+                                if (sda_i == 1'b0) begin
                                     if (rw_i) begin
                                         // A read transaction ends the address phase here.
                                         // i2c_master starts i2c_rx and begins data clocks.
@@ -235,7 +235,7 @@ module i2c_tx (
                             4'd3: begin
                                 scl_o <= 1'b0;
                                 phase <= 4'd0;
-                                if (ack_level == 1'b1)
+                                if (sda_i == 1'b1)
                                     nack_o <= 1'b1;
                                 state <= ST_STOP;
                             end

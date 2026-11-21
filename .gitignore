@@ -1,0 +1,9 @@
+# Icarus Verilog build and simulation artifacts
+*.vvp
+*.vcd
+*.out
+*.log
+
+# Temporary compilation products
+*.d
+*.o
