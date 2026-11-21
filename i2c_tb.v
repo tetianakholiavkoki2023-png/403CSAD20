@@ -246,15 +246,15 @@ module i2c_tb;
         @(posedge clk);
         tx_start = 1'b0;
 
-        wait (tx_done === 1'b1);
-        $display("[%0t] Tx done: NACK=%b Tx-state=%0d", $time, tx_nack, dut_tx.state);
         fork
             begin
-                repeat (5000) begin
-                    @(posedge clk);
-                    if (rx_valid)
-                        rx_received = rx_data;
-                end
+                wait (tx_done === 1'b1);
+                $display("[%0t] Tx done: NACK=%b Tx-state=%0d", $time, tx_nack, dut_tx.state);
+            end
+            begin
+                wait (rx_valid === 1'b1);
+                rx_received = rx_data;
+                $display("[%0t] Rx captured 0x%02X", $time, rx_data);
             end
         join
         if (!rx_valid)
