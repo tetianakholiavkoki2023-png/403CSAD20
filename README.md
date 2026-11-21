@@ -51,3 +51,28 @@ CLK_DIV = 500
 ## Синхронізація SDA/SCL
 
 Дані змінюються лише при опущеному SCL. Сканування SDA здійснюється на високому рівні SCL. START визначається зміною SDA 1→0 при SCL=1, STOP — 0→1 при SCL=1. При Master Receiver після останнього прийнятого байта модуль видає NACK і формує STOP.
+
+## Testbench
+
+`i2c_tb.v` перевіряє:
+
+- Standalone Tx у парі зі Standalone Rx Slave;
+- запис даних через `i2c_master` з ACK емулятора Slave;
+- читання даних через `i2c_master` з ACK адреси та поточним байтом `0xC3`;
+- останній байт Master Receiver супроводжується NACK;
+- стан FSM Tx, Rx та Master доступний у ієрархії `dut_tx`, `dut_rx_slave`, `dut_master`.
+
+Запуск і дамп VCD:
+
+```sh
+iverilog -g2001 -o i2c_tb.vvp i2c_tx.v i2c_rx.v i2c_master.v i2c_tb.v
+vvp i2c_tb.vvp
+```
+
+Результат симуляції відкривається у GTKWave:
+
+```sh
+gtkwave i2c_wave.vcd
+```
+
+У консолі виводяться часові мітки запуску тестів, RX-байти, ACK/NACK і стан виконання; у дамп потрапляють `clk`, `rst_n`, `SCL`, `SDA`, Busy/Done, дані та стан FSM.

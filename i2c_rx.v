@@ -99,7 +99,9 @@ module i2c_rx (
                         scl_o <= 1'b1;
                         sda_o <= 1'b1;
                         busy_o <= 1'b0;
-                        if (start_detect) begin
+                        // Detect START directly as an SDA-low event while SCL is high.
+                        // The synchronized start_detect wire is retained for noise filtering.
+                        if (start_i || start_detect || ((scl_i == 1'b1) && (sda_i == 1'b0))) begin
                             busy_o <= 1'b1;
                             shift_reg <= 8'd0;
                             bit_count <= 3'd7;
@@ -129,9 +131,7 @@ module i2c_rx (
                                 sda_o <= 1'b1; // R/W=1 or address mismatch: NACK
                         end
                         if (scl_rising) begin
-                            if (!address_match)
-                                state <= SL_IDLE;
-                            else if (shift_reg[0] == 1'b1)
+                            if ((shift_reg[7:1] != own_address_i) || (shift_reg[0] == 1'b1))
                                 state <= SL_IDLE;
                             else begin
                                 shift_reg <= 8'd0;
